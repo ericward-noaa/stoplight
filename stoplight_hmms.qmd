@@ -1,0 +1,344 @@
+---
+title: "HMMs & Ocean Ecosystem Indicators"
+author: "Eric Ward"
+format: pdf
+---
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| results: hide
+library(depmixS4)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+set.seed(1)
+```
+
+#### HMMs: single time series
+
+Just for proof of concept, I'll start with fitting a simple HMM to a single time series from the latest data used to make the stoplight chart
+
+```{r}
+#| warning: false
+#| message: false
+#| results: hide
+d <- read.csv("Stoplight-updated-03282022_0.csv",header=TRUE)
+years <- 1998:2021
+names <- d[,1]
+d <- as.data.frame(t(d[,-1]))
+colnames(d) <- names
+d <- d[,1:16] # drop PCA and things not included
+d$year <- years
+names(d)[1:16] <- paste0("X",seq(1,16))
+```
+
+Arbitrarily using the first time series (PDO Dec-Mar)
+
+```{r}
+#| warning: false
+#| message: false
+#| results: hide
+formulas = list(X1 ~ 1)
+families = list(gaussian())
+model3 = depmix(response = formulas, data = d, nstates= 3, 
+                family = families) # construct model
+fm3 = fit(model3) # estimation
+```
+
+As a gut check, we can color code the data by classified 'state' and see states 1-3 generally correspond to high/medium/low PDO.
+
+```{r, fig.width=7, fig.height=1.5}
+#| echo: false
+#| warning: false
+#| message: false
+#| results: hide
+df <- data.frame(yr = d$year, y = d[,1], state = paste("state",posterior(fm3)[,1]))
+ggplot(df, aes(yr, y, col = state)) + geom_point() + theme_bw() + xlab("Year")+ ylab("PDO")
+```
+
+\break
+
+#### HMMs: all stoplight time series
+
+Taking this a step further, we can then construct a model for all responses simultaneously. We assume all have a normal / Gaussian response, but could change that.
+
+```{r}
+#| warning: false
+#| message: false
+#| results: hide
+# fit model to all 
+formulas = list(X1 ~ 1,
+                X2 ~ 1,
+                X3 ~ 1,
+                X4 ~ 1,
+                X5 ~ 1,
+                X6 ~ 1,
+                X7 ~ 1,
+                X8 ~ 1,
+                X9 ~ 1,
+                X10 ~ 1,
+                X11 ~ 1,
+                X12 ~ 1,
+                X13 ~ 1,
+                X14 ~ 1,
+                X15 ~ 1,
+                X16 ~ 1)
+
+families = list(gaussian(), gaussian(), gaussian(), gaussian(),
+                gaussian(), gaussian(), gaussian(), gaussian(),
+                gaussian(), gaussian(), gaussian(), gaussian(),
+                gaussian(), gaussian(), gaussian(), gaussian())
+```
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| results: hide
+# fit 2 state model
+best_model = NA
+best_aic = 1.0e10
+
+dz <- d
+for(i in 1:16) {
+  dz[,i] <- scale(dz[,i])
+}
+model2 = depmix(response = formulas, data = dz, nstates= 2, 
+                  family = families)
+for(i in 1:10) {
+  fm2 = try(fit(model2, solnpcntrl = list(tol = 1e-10)),
+            silent=TRUE)
+  if(class(fm2) != "try-error") {
+    if(AIC(fm2) < best_aic) {
+      best_aic = AIC(fm2)
+      best_model = fm2
+    }
+  }
+}
+fm2 = best_model
+```
+
+```{r}
+#| warning: false
+#| message: false
+#| results: hide
+
+dz <- d 
+for(i in 1:16) {
+  dz[,i] <- scale(dz[,i]) # standardize data
+}
+# fit 3 state model
+set.seed(42)
+best_model = NA
+best_aic = 1.0e10
+model3 = depmix(response = formulas, data = dz, nstates= 3, 
+                  family = families)
+for(i in 1:100) {
+  fm3 = try(fit(model3, solnpcntrl = list(tol = 1e-10)),
+            silent=TRUE)
+  if(class(fm3) != "try-error") {
+    if(AIC(fm3) < best_aic) {
+      best_aic = AIC(fm3)
+      best_model = fm3
+    }
+  }
+}
+fm3 = best_model
+```
+
+We can ask whether a 2- or 3-state model does better. The AIC value for the 3 - state model is lower than the 2 state model, and results are more interesting.
+
+```{r}
+AIC(fm2) - AIC(fm3)
+```
+
+#### Interpreting output
+
+Here's how the model classifies the states for the best model
+
+```{r, fig.width=8, fig.height=5}
+#| echo: false
+#| warning: false
+#| message: false
+#| results: hide
+df <- data.frame(year = d$year, 
+                 state = paste("state",
+                 posterior(fm3, type="viterbi")[,1]))
+names(d)[1:16] <- names[1:16]
+d <- dplyr::left_join(d, df)
+
+d_long <- tidyr::pivot_longer(d, cols = 1:16)
+ggplot(d_long, aes(year, value, col = state)) + geom_point() + 
+  facet_wrap(~name, scale="free") + 
+  theme(strip.text.x = element_text(size = 6)) + 
+  theme_bw() + xlab("Year") + ylab("Value")
+```
+
+\break
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+#| results: hide
+pars <- getpars(fm3)
+pars <- pars[grep("Intercept", names(pars))]
+par_summary <- matrix(pars, ncol=3) 
+colnames(par_summary) = paste0("State ",1:3)
+rownames(par_summary) = names[1:16]
+sds <- getpars(fm3)
+sds <- sds[grep("sd", names(sds))]
+sds <- matrix(sds, ncol=3) 
+```
+
+HMMs are affected by the label switching problem -- so state names (1, 2, 3) are arbitrary (and will change when the seed is changed). For this case, State 2 is the intermediate state for all variables except Deep salinity,
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+knitr::kable(par_summary, digits = 2, caption = "Table of parameter means for each time series and state")
+```
+
+One advantage of thinking about this problem as an HMM is that because we know the current state,
+
+```{r}
+#| error: false
+#| message: false
+#| warning: false
+posterior(fm3)[24,1]
+```
+
+we can look at the transition matrix to understand the probability of switching to another state 1-time step in the future. So 1/3 of the time we'd be expected to switch to state 2.
+
+```{r}
+#| warning: false
+m <- matrix(0, 3, 3)
+for(i in 1:nrow(m)) {
+  m[i,] <- fm3@transition[[i]]@parameters$coefficients
+}
+rownames(m) <- paste0("From_", 1:3)
+colnames(m) <- paste0("To_",1:3)
+
+```
+
+```{r}
+#| echo: false
+#| error: false
+#| message: false
+#| warning: false
+knitr::kable(m, digits = 3, caption = "Transition probabilities for 3-state model")
+```
+
+Combined with the table above, we could generate expected means for various variables of interest.
+
+Another thing that could be done with this output is the SEs on the parameter estimates (state means) could be used to identify which time series might be not worth including. Using the above example, the CVs for the parameters are in this table. There's not a hard rule here, but we could look at indicators with CVs > 1 in 2 or more states. The CVs for Deep salinity are all > 1 -- and perhaps that's not surprising; in the figure above the Deep salinity time series doesn't seem to match up very well with the color coded state estimates.
+
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+pars <- getpars(fm3)
+pars <- pars[grep("Intercept", names(pars))]
+sds <- getpars(fm3)
+sds <- sds[grep("sd", names(sds))]
+sds <- matrix(sds, ncol=3) 
+par_summary <- sds / abs(matrix(pars, ncol=3))
+colnames(par_summary) = paste0("State ",1:3)
+rownames(par_summary) = names[1:16]
+knitr::kable(par_summary, digits = 3, caption = "CVs of intercept estimates for 3-state model")
+
+```
+
+\break
+
+#### HMMs with discrete responses
+
+In the above example, raw time series were fed into the HMM. Alternatively, we could feed in categorical responses for each time series (e.g. red/yellow/green). This is probably not as ideal, but just showing it can be done.
+
+```{r}
+dcat <- d
+names(dcat)[1:16] <- paste0("X",1:16)
+for(i in 1:16) {
+  red <- which(d[,i] < quantile(d[,i], 0.333))
+  green <- which(d[,i] > quantile(d[,i], 0.667))  
+  dcat[,i] = "yellow"
+  dcat[red,i] = "red"
+  dcat[green,i] = "green"
+  dcat[,i] <- as.factor(dcat[,i])
+}
+```
+
+The only real switch to the modeling is changing all families to multinomial,
+
+```{r}
+families = list(multinomial(), multinomial(), multinomial(),
+                multinomial(),multinomial(), multinomial(), 
+                multinomial(), multinomial(),multinomial(), 
+                multinomial(), multinomial(), multinomial(),
+                multinomial(), multinomial(), multinomial(), 
+                multinomial())
+```
+
+```{r}
+#| warning: false
+#| message: false
+#| results: hide
+
+# fit 3 state model
+set.seed(42)
+best_model = NA
+best_aic = 1.0e10
+model3 = depmix(response = formulas, data = dcat, nstates= 3, 
+                  family = families)
+for(i in 1:100) {
+  fm3 = try(fit(model3, solnpcntrl = list(tol = 1e-10)),
+            silent=TRUE)
+  if(class(fm3) != "try-error") {
+    if(AIC(fm3) < best_aic) {
+      best_aic = AIC(fm3)
+      best_model = fm3
+    }
+  }
+}
+fm3 = best_model
+```
+
+```{r, fig.width=8, fig.height=5}
+#| echo: false
+#| warning: false
+#| message: false
+#| results: hide
+df <- data.frame(year = d$year, 
+                 state = paste("state",
+                 posterior(fm3, type="viterbi")[,1]))
+names(d)[1:16] <- names[1:16]
+d <- dplyr::left_join(d, df)
+
+d_long <- tidyr::pivot_longer(d, cols = 1:16)
+ggplot(d_long, aes(year, value, col = state)) + geom_point() + 
+  facet_wrap(~name, scale="free") + 
+  theme(strip.text.x = element_text(size = 6)) + 
+  theme_bw() + xlab("Year") + ylab("Value")
+```
+
+```{r}
+#| warning: false
+m <- matrix(0, 3, 3)
+for(i in 1:nrow(m)) {
+  m[i,] <- fm3@transition[[i]]@parameters$coefficients
+}
+rownames(m) <- paste0("From_", 1:3)
+colnames(m) <- paste0("To_",1:3)
+
+```
+
+```{r}
+#| echo: false
+#| error: false
+#| message: false
+#| warning: false
+knitr::kable(m, digits = 3, caption = "Transition probabilities for 3-state model with categorical inputs")
+```
